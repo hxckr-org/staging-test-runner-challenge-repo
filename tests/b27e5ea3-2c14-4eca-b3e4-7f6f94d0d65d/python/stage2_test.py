@@ -1,5 +1,5 @@
 import pytest
-from app.main import MultisigWallet
+from main import MultisigWallet
 from bitcoinutils.setup import setup
 from bitcoinutils.transactions import Transaction, TxInput, TxOutput
 from bitcoinutils.keys import P2wpkhAddress
