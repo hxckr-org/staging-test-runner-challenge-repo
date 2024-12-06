@@ -1,10 +1,17 @@
-//@ts-nocheck
+// @ts-nocheck
 
 import * as bitcoin from "bitcoinjs-lib";
 import * as bip39 from "bip39";
 import * as ecc from "tiny-secp256k1";
 import { MultisigWallet } from "./main";
 import { describe, expect, it, beforeEach } from "bun:test";
+
+interface KeyPairInfo {
+  mnemonic: string;
+  path: string;
+  publicKey: Buffer;
+  privateKey?: Buffer;
+}
 
 describe("Multisig Wallet Tests", () => {
   describe("Wallet Creation", () => {
@@ -141,6 +148,77 @@ describe("Multisig Wallet Tests", () => {
       const addresses = wallet.getAddresses();
       expect(addresses?.p2sh).toMatch(/^3/); // Mainnet P2SH
       expect(addresses?.p2wsh).toMatch(/^bc1/); // Mainnet P2WSH
+    });
+  });
+
+  describe("signTransaction", () => {
+    let wallet: MultisigWallet;
+    let dummyTx: bitcoin.Transaction;
+    let keyPair: KeyPairInfo;
+    
+    beforeEach(async () => {
+      wallet = new MultisigWallet(2, 3);
+      await wallet.generateWallet();
+      
+      // Setup dummy transaction
+      dummyTx = new bitcoin.Transaction();
+      dummyTx.addInput(
+        Buffer.from('a'.repeat(64), 'hex'),
+        0
+      );
+      dummyTx.addOutput(
+        Buffer.from('00'.repeat(20), 'hex'),
+        100000
+      );
+      
+      keyPair = await wallet.generateKeyPair(0);
+    });
+
+    it('should throw error when private key is missing', async () => {
+      const keyPairWithoutPrivate = { ...keyPair, privateKey: undefined };
+      await expect(
+        wallet.signTransaction(dummyTx.toHex(), 0, keyPairWithoutPrivate)
+      ).rejects.toThrow('Private key required');
+    });
+
+    it('should throw error for invalid input index', async () => {
+      await expect(
+        wallet.signTransaction(dummyTx.toHex(), 999, keyPair)
+      ).rejects.toThrow('Invalid input index');
+    });
+
+    it('should use SIGHASH_ALL instead of SIGHASH_NONE', async () => {
+      const signedTxHex = await wallet.signTransaction(dummyTx.toHex(), 0, keyPair);
+      const signedTx = bitcoin.Transaction.fromHex(signedTxHex);
+      
+      // Extract signature from input script
+      const inputScript = bitcoin.script.decompile(signedTx.ins[0].script);
+      const signature = inputScript![1] as Buffer;
+      
+      // Last byte of signature is hashType
+      const hashType = signature[signature.length - 1];
+      expect(hashType).toBe(bitcoin.Transaction.SIGHASH_ALL);
+    });
+
+    it('should include OP_0 and redeemScript in input script', async () => {
+      const signedTxHex = await wallet.signTransaction(dummyTx.toHex(), 0, keyPair);
+      const signedTx = bitcoin.Transaction.fromHex(signedTxHex);
+      
+      const inputScript = bitcoin.script.decompile(signedTx.ins[0].script);
+      expect(inputScript![0]).toBe(bitcoin.opcodes.OP_0);
+      expect(inputScript![inputScript!.length - 1]).toEqual(wallet.getRedeemScript());
+    });
+
+    it('should properly encode signature with hashType', async () => {
+      const signedTxHex = await wallet.signTransaction(dummyTx.toHex(), 0, keyPair);
+      const signedTx = bitcoin.Transaction.fromHex(signedTxHex);
+      
+      const inputScript = bitcoin.script.decompile(signedTx.ins[0].script);
+      const signature = inputScript![1] as Buffer;
+      
+      // Verify signature format (DER + hashType byte)
+      expect(signature.length).toBeGreaterThan(70); // DER sig (~71-73 bytes) + hashType (1 byte)
+      expect(signature[0]).toBe(0x30); // DER sequence
     });
   });
 });
